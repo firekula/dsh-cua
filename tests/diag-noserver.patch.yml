@@ -1,0 +1,7 @@
+# Diagnostic overlay: move this diagnostic instance's webserver to a free port
+# so the full loader tree (with dsh-cua mounted) can boot for inspection
+# without touching the live 3080 instance. Same approach as dsh-goz e2e.
+- id: webserver
+  config:
+    host: 127.0.0.1
+    port: 3099

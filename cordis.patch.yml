@@ -1,0 +1,5 @@
+- insert:
+    - id: cua
+      name: dsh-cua
+      config:
+        requireApproval: true

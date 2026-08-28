@@ -34,6 +34,45 @@
 
 一次工具调用 = spawn 一次自带的 `cua-driver.exe` CLI（stdin 送 JSON、stdout 收 JSON），实际状态常驻 `\\.\pipe\cua-driver` 后面的驱动 daemon 里。CLI 进程无状态、崩溃即隔离，绝不把 harness 拖下水；驱动的域级错误（如快照过期）以结构化信封返回并转成模型可读消息。
 
+## 示例输出
+
+**以下为构造的示例数据**，仅用于展示输出形态（非真实采集）。
+
+`cua_window_state`（节选）——模型拿到 summary、结构化 `elements`，截图作为图片附件随行：
+
+```jsonc
+{
+  "source": "cua-driver",
+  "tool": "get_window_state",
+  "summary": "窗口快照完成（snapshot_id=42，elements 88/88）。",
+  "data": {
+    "snapshot_id": 42,
+    "total_element_count": 88,
+    "returned_element_count": 88,
+    "elements": [
+      { "index": 0,  "element_token": "e0",  "role": "Window", "label": "示例计算器" },
+      { "index": 17, "element_token": "e17", "role": "Button", "label": "7", "frame": { "x": 24,  "y": 210, "width": 72, "height": 56 }, "enabled": true },
+      { "index": 21, "element_token": "e21", "role": "Button", "label": "+", "frame": { "x": 184, "y": 210, "width": 72, "height": 56 }, "enabled": true },
+      { "index": 30, "element_token": "e30", "role": "Edit",   "label": "结果", "value": "0", "enabled": true }
+    ]
+  },
+  "image": { "attachmentId": "att_9f2c", "mediaType": "image/png", "bytes": 48213, "width": 960, "height": 1240, "name": "get_window_state.png" }
+}
+```
+
+随后点「7」并断言结果框的值——动作先过审批面板，验证给确定性闭环：
+
+```text
+cua_click { "element_token": "e17" }
+  → 审批面板「点击『示例计算器』的 Button "7"」→ 允许 → {}
+
+cua_verify_state { "pid": 4242, "window_id": 197001, "expect": [
+    { "element": { "selector": { "role": "Edit", "label_contains": "结果" }, "value": "7" } }] }
+  → { "results": [ { "state": "satisfied" } ], "summary": "1/1 satisfied" }
+```
+
+断言读不到目标时返回 `unknown` 并如实说明——`unknown` 永不当作成功。
+
 ## 安装
 
 前置：一个带 profile 的 DSH 部署；驱动 daemon 在线（`cua-driver serve`，或 `cua-driver autostart enable` 注册登录自启）。没有全局驱动时可直接用插件自带副本：`vendor\bin\cua-driver.exe serve`。

@@ -1,7 +1,7 @@
 {
   "name": "dsh-cua",
   "version": "0.1.0",
-  "description": "Computer Use for DeepSeek Harness backed by the cua-driver daemon (trycua): UIA element-level targeting, background-first input delivery, window/desktop screenshots, deterministic verification.",
+  "description": "Computer Use for DeepSeek Harness backed by the cua-driver daemon (trycua): accessibility element-level targeting, background-first input delivery, window/desktop screenshots, deterministic verification.",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
@@ -23,9 +23,6 @@
     "build": "tsc -p tsconfig.json",
     "test": "node tests/smoke.mjs && node tests/e2e.mjs"
   },
-  "os": [
-    "win32"
-  ],
   "engines": {
     "node": ">=20"
   },

@@ -1,11 +1,11 @@
 /**
  * Transport between the plugin and the local `cua-driver` daemon.
  *
- * Every tool call spawns the packaged `cua-driver.exe` CLI once, hands the
- * JSON arguments over stdin (PowerShell-safe, no shell quoting involved) and
- * parses the single JSON document printed to stdout. The daemon keeps all
- * state (UIA snapshots, sessions, permission policy) between calls; the CLI
- * process is stateless and crash-isolated, mirroring the dsh-goz transport.
+ * Every tool call spawns the driver binary once, hands the JSON arguments
+ * over stdin (no shell involved) and parses the single JSON document printed
+ * to stdout. The daemon keeps all state (accessibility snapshots, sessions,
+ * permission policy) between calls; the CLI process is stateless and
+ * crash-isolated, mirroring the dsh-goz transport.
  *
  * Domain errors arrive as JSON envelopes on stdout (`{code, suggestion}` /
  * `{code, message}`) with exit code 0, so the parser — not the exit code —
@@ -27,11 +27,6 @@ export declare const RAW_OUTPUT_MAX_BYTES = 4000000;
 export declare const STDERR_MAX_BYTES = 16000;
 /** Terminate-escalation grace (ms), handed to the subprocess seam. */
 export declare const GRACE_MS = 2000;
-/**
- * Fixed, user-actionable explanation shown whenever the daemon cannot be
- * reached. Installation is one command plus (optionally) autostart.
- */
-export declare const DAEMON_SETUP_GUIDE: string;
 /** Spawn `cua-driver.exe` with fixed argv, optional JSON payload over stdin. */
 export declare function runCua(ctx: Context, exec: {
     signal: AbortSignal;

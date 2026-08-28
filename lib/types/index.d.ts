@@ -16,10 +16,10 @@
  *   so the model grounds pixel actions on the exact bytes it saw.
  *
  * Transport mirrors dsh-goz: one stateless CLI spawn per call carrying JSON
- * over stdin to the long-lived daemon on `\\.\pipe\cua-driver`; crash-safe,
- * no native modules in-process. The packaged `vendor/bin` ships
- * `cua-driver.exe` (+ UIA helper) so the plugin works out of the box;
- * `binDir` overrides for user-managed installs.
+ * over stdin to the long-lived daemon; crash-safe, no native modules
+ * in-process. The packaged `vendor/bin` ships out-of-the-box driver binaries
+ * for the platforms that have them (macOS universal, Windows x64); other
+ * platforms resolve `cua-driver` from `binDir` / `CUA_DRIVER_BIN` / `PATH`.
  *
  * @module dsh-cua
  */
@@ -31,7 +31,7 @@ export declare const name = "cua";
 export declare const inject: string[];
 /** Plugin config; every field is optional. */
 export interface Config {
-    /** Directory containing `cua-driver.exe`. Defaults to the packaged `vendor/bin/`. */
+    /** Directory containing the driver binary (`cua-driver` / `cua-driver.exe`). Overrides vendored copy, env and PATH. */
     binDir?: string;
     /** Cooperative tool-call timeout budget in milliseconds. */
     timeoutMs?: number;

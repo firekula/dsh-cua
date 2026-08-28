@@ -23,5 +23,5 @@ export interface ResolvedConfig {
 }
 /** Tools that change machine state — routed through the approval gate. */
 export declare const ACT_TOOLS: ReadonlySet<string>;
-/** Snapshot 参数上限：UIA 树会被模型端的 max_elements 夹紧。 */
+/** Snapshot 参数上限：元素树会被模型端的 max_elements 夹紧。 */
 export declare function registerCuaTools(ctx: Context, cfg: ResolvedConfig): void;

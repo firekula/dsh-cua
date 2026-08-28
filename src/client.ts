@@ -1,11 +1,11 @@
 /**
  * Transport between the plugin and the local `cua-driver` daemon.
  *
- * Every tool call spawns the packaged `cua-driver.exe` CLI once, hands the
- * JSON arguments over stdin (PowerShell-safe, no shell quoting involved) and
- * parses the single JSON document printed to stdout. The daemon keeps all
- * state (UIA snapshots, sessions, permission policy) between calls; the CLI
- * process is stateless and crash-isolated, mirroring the dsh-goz transport.
+ * Every tool call spawns the driver binary once, hands the JSON arguments
+ * over stdin (no shell involved) and parses the single JSON document printed
+ * to stdout. The daemon keeps all state (accessibility snapshots, sessions,
+ * permission policy) between calls; the CLI process is stateless and
+ * crash-isolated, mirroring the dsh-goz transport.
  *
  * Domain errors arrive as JSON envelopes on stdout (`{code, suggestion}` /
  * `{code, message}`) with exit code 0, so the parser — not the exit code —
@@ -17,6 +17,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import type { JsonValue } from '@deepseek-ai/dsh-tools'
+import { daemonSetupGuide } from './platform.js'
 
 /** One completed spawn with captured output and exit code. */
 export interface CuaRun {
@@ -31,15 +32,6 @@ export const RAW_OUTPUT_MAX_BYTES = 4_000_000
 export const STDERR_MAX_BYTES = 16_000
 /** Terminate-escalation grace (ms), handed to the subprocess seam. */
 export const GRACE_MS = 2_000
-
-/**
- * Fixed, user-actionable explanation shown whenever the daemon cannot be
- * reached. Installation is one command plus (optionally) autostart.
- */
-export const DAEMON_SETUP_GUIDE =
-  'cua-driver daemon 未运行。请在一个普通终端执行 `cua-driver serve` 启动常驻服务'
-  + '（或 `cua-driver autostart enable` 注册登录自启），确认 `\\\\.\\pipe\\cua-driver` 存在后重试。'
-  + ' 可用 `cua_status` 工具或 `cua-driver doctor` 自检。'
 
 /** Spawn `cua-driver.exe` with fixed argv, optional JSON payload over stdin. */
 export async function runCua(
@@ -174,8 +166,8 @@ export function parseCallOutput(toolName: string, run: CuaRun): unknown {
 
 function handleNonJsonOutput(toolName: string, run: CuaRun, out: string): unknown {
   const lower = `${out}\n${run.stderr}`.toLowerCase()
-  if (/daemon.*(not running|unreachable)|no .*daemon|pipe.*not.*found|denied/.test(lower)) {
-    throw new Error(`cua ${toolName}: ${DAEMON_SETUP_GUIDE}\n驱动输出：${out.slice(0, 400)}`)
+  if (/daemon.*(not running|unreachable)|no .*daemon|pipe.*not.*found|socket.*(not found|no such)|no such file or directory|connection refused|denied/.test(lower)) {
+    throw new Error(`cua ${toolName}: ${daemonSetupGuide()}\n驱动输出：${out.slice(0, 400)}`)
   }
   if (run.exitCode !== 0) {
     const tail = run.stderr.trim()

@@ -16,21 +16,21 @@
  *   so the model grounds pixel actions on the exact bytes it saw.
  *
  * Transport mirrors dsh-goz: one stateless CLI spawn per call carrying JSON
- * over stdin to the long-lived daemon on `\\.\pipe\cua-driver`; crash-safe,
- * no native modules in-process. The packaged `vendor/bin` ships
- * `cua-driver.exe` (+ UIA helper) so the plugin works out of the box;
- * `binDir` overrides for user-managed installs.
+ * over stdin to the long-lived daemon; crash-safe, no native modules
+ * in-process. The packaged `vendor/bin` ships out-of-the-box driver binaries
+ * for the platforms that have them (macOS universal, Windows x64); other
+ * platforms resolve `cua-driver` from `binDir` / `CUA_DRIVER_BIN` / `PATH`.
  *
  * @module dsh-cua
  */
 
 import { existsSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import { isAbsolute, join, resolve } from 'node:path'
+import { resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import z from '@deepseek-ai/schemastery'
 import { registerCuaTools, ACT_TOOLS, type ResolvedConfig } from './tools.js'
+import { resolveDriverPath, type DriverResolutionOrigin } from './platform.js'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'cua'
@@ -47,7 +47,7 @@ const DEFAULT_MAX_ROWS = 120
 
 /** Plugin config; every field is optional. */
 export interface Config {
-  /** Directory containing `cua-driver.exe`. Defaults to the packaged `vendor/bin/`. */
+  /** Directory containing the driver binary (`cua-driver` / `cua-driver.exe`). Overrides vendored copy, env and PATH. */
   binDir?: string
   /** Cooperative tool-call timeout budget in milliseconds. */
   timeoutMs?: number
@@ -70,19 +70,16 @@ export const Config: z<Config> = z.object({
   maxRows: z.number().step(1).min(10).max(1_000),
 })
 
-/** Resolve the packaged (or configured) `cua-driver.exe` absolute path. */
-function resolveExe(config: Resolved): string {
-  const candidates: string[] = []
-  if (config.binDir.length > 0) {
-    candidates.push(isAbsolute(config.binDir) ? join(config.binDir, 'cua-driver.exe') : join(process.cwd(), config.binDir, 'cua-driver.exe'))
-  }
-  const envPath = process.env['CUA_DRIVER_BIN']
-  if (envPath !== undefined && envPath.length > 0) candidates.push(envPath)
-  candidates.push(fileURLToPath(new URL('../vendor/bin/cua-driver.exe', import.meta.url)))
-  return candidates.find((path) => existsSync(path)) ?? candidates[candidates.length - 1]!
-}
-
 type Resolved = Required<Config>
+
+/** 解析来源转成用户可读标签，用于加载日志。 */
+const ORIGIN_LABEL: Record<DriverResolutionOrigin, string> = {
+  binDir: 'config binDir',
+  env: 'CUA_DRIVER_BIN',
+  vendored: '插件自带',
+  path: 'PATH',
+  missing: '未找到',
+}
 
 /**
  * Install the approval gate: every `ACT_TOOLS` member becomes an `ask`
@@ -130,7 +127,7 @@ function describeTarget(args: Record<string, unknown> | undefined): string {
 /** Compose the fixed system-prompt guidance block. */
 function systemPromptText(): string {
   return [
-    'cua_* 是本机计算机控制（Computer Use）工具族，底层是常驻的 cua-driver daemon：UIA 元素级寻址、默认后台投递（不抢用户焦点）、结构化错误。',
+    'cua_* 是本机计算机控制（Computer Use）工具族，底层是常驻的 cua-driver daemon：无障碍元素级寻址（Windows 下经 UIA、macOS 下经原生 Accessibility，协议一致）、默认后台投递（不抢用户焦点）、结构化错误。',
     '标准闭环：先用 cua_list_windows / cua_list_apps 找到 pid 与 window_id；再 cua_window_state 拿 element_token 与 grounding 截图；用 token 执行点击/输入等动作；关键操作后用 cua_verify_state 做谓词自检。',
     'element_token 过期会显式报错——重拍快照即可，不要复用旧快照的 token 迭代多步动作。',
     '像素坐标只在 canvas/视频/自绘表面这类非 UIA 表面使用：窗口内像素基于该窗口最近一次截图（缩放后像素），桌面绝对像素配合 scope:"desktop"（依据 cua_desktop_screenshot 的真实物理像素）。非 UIA 表面的降级路径由驱动返回值中的 escalation/degraded 字段指明。',
@@ -153,8 +150,9 @@ export function apply(ctx: Context, config: Config): void {
     return
   }
 
-  const exePath = resolveExe(resolved)
-  ctx.logger.info('cua: plugin loaded (driver: %s, exists: %s, approval: %s)', resolve(exePath), String(existsSync(exePath)), String(resolved.requireApproval))
+  const resolution = resolveDriverPath(resolved.binDir, process.env['CUA_DRIVER_BIN'])
+  ctx.logger.info('cua: plugin loaded (driver: %s, exists: %s, source: %s, approval: %s)',
+    resolve(resolution.path), String(existsSync(resolution.path)), ORIGIN_LABEL[resolution.origin], String(resolved.requireApproval))
 
   ctx.systemPrompt.section({
     name: 'tool:cua_*',
@@ -165,7 +163,7 @@ export function apply(ctx: Context, config: Config): void {
   applyApprovalGate(ctx, resolved.requireApproval)
 
   const resolvedCfg: ResolvedConfig = {
-    exePath,
+    exePath: resolution.path,
     timeoutMs: resolved.timeoutMs,
     maxElements: resolved.maxElements,
     maxRows: resolved.maxRows,

@@ -1,22 +1,27 @@
 /**
- * dsh-cua 冒烟测试（需本地 cua-driver daemon 在线）。
+ * dsh-cua 冒烟测试（集成层需本地 cua-driver daemon 在线）。
  *
  * 两层：
  *  1) 单元层 —— 直接 import 构建产物 lib/client.js 的纯函数，
  *     校验错误信封识别、遥测噪声过滤与错误消息组装。
- *  2) 集成层 —— 直接 spawn vendor/bin/cua-driver.exe 走「stdin JSON 参数 +
- *     stdout JSON 信封」的真实协议路径，覆盖观察/截图落盘/结构化错误三类。
+ *  2) 集成层 —— 用 lib/platform.js 的解析结果 spawn 真实驱动二进制，
+ *     走「stdin JSON 参数 + stdout JSON 信封」协议路径，覆盖观察/截图落盘/
+ *     结构化错误三类。没有可用的驱动二进制时跳过集成层。
  *
  * 用法：node tests/smoke.mjs
  */
 import { spawn } from 'node:child_process'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
-const EXE = join(ROOT, 'vendor', 'bin', 'cua-driver.exe')
+const platform = await import(`file:///${join(ROOT, 'lib', 'platform.js').replace(/\\/g, '/')}`)
+const resolution = platform.resolveDriverPath('', process.env['CUA_DRIVER_BIN'])
+const EXE = resolution.path
+const HAS_EXE = existsSync(EXE)
 
 const TIMEOUT_MS = 60_000
 
@@ -48,6 +53,9 @@ function callDriver(tool, payload) {
     }, TIMEOUT_MS)
     child.stdout.on('data', (chunk) => stdout.push(chunk))
     child.stderr.on('data', (chunk) => stderr.push(chunk))
+    // daemon 离线时 CLI 立即退出，stdin 写入会 EPIPE；close 处理器已把
+    // 散文输出交给断言，这里吞掉写失败的 error 事件避免进程崩溃。
+    child.stdin.on('error', () => {})
     child.on('error', (error) => {
       if (!done) {
         done = true
@@ -101,8 +109,14 @@ try {
 
 // ---------- 集成层：真实 daemon 协议（callDriver 已在文件头定义） ----------
 
+if (!HAS_EXE) {
+  console.log(`SKIP  集成层：本平台没有可用的驱动二进制（解析结果 ${EXE}）。可用 CUA_DRIVER_BIN 指定后重试。`)
+}
+
 {
-  try {
+  if (!HAS_EXE) {
+    check('集成：get_screen_size 返回宽高（已跳过）', true)
+  } else try {
     const { stdout } = await callDriver('get_screen_size')
     const parsed = JSON.parse(stdout)
     check('集成：get_screen_size 返回宽高', typeof parsed.width === 'number' && typeof parsed.height === 'number', stdout.slice(0, 200))
@@ -115,13 +129,21 @@ try {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-cua-smoke-'))
   try {
     const pngPath = join(dir, 'shot.png')
-    const { stdout } = await callDriver('get_desktop_state', { screenshot_out_file: pngPath })
-    const meta = JSON.parse(stdout)
-    const bytes = await readFile(pngPath)
-    check('集成：screenshot_out_file 落盘且 PNG 非空',
-      typeof meta.screenshot_file_path === 'string' && bytes.byteLength > 1000 && bytes[0] === 0x89,
-      `${meta.screenshot_file_path} ${bytes.byteLength}B`)
-    check('集成：返回尺寸字段可读', typeof meta.screenshot_width === 'number' && typeof meta.screenshot_height === 'number')
+    if (!HAS_EXE) {
+      check('集成：screenshot_out_file 落盘且 PNG 非空（已跳过）', true)
+      check('集成：返回尺寸字段可读（已跳过）', true)
+    } else try {
+      const { stdout } = await callDriver('get_desktop_state', { screenshot_out_file: pngPath })
+      const meta = JSON.parse(stdout)
+      const bytes = await readFile(pngPath)
+      check('集成：screenshot_out_file 落盘且 PNG 非空',
+        typeof meta.screenshot_file_path === 'string' && bytes.byteLength > 1000 && bytes[0] === 0x89,
+        `${meta.screenshot_file_path} ${bytes.byteLength}B`)
+      check('集成：返回尺寸字段可读', typeof meta.screenshot_width === 'number' && typeof meta.screenshot_height === 'number')
+    } catch (error) {
+      check('集成：screenshot_out_file 落盘且 PNG 非空', false, String(error).slice(0, 300))
+      check('集成：返回尺寸字段可读', false, '前置调用失败')
+    }
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {})
   }
@@ -129,17 +151,21 @@ try {
 
 {
   // 结构化错误信封：桌面坐标缺 scope —— daemon 域错误、exit code 仍为 0
-  let sawStructuredError = false
-  try {
-    const result = await callDriver('click', { x: 6, y: 6 }).catch((e) => e) // eslint-disable-line no-await-in-loop
-    const text = String(result.stdout ?? '')
-    const parsed = JSON.parse(text)
-    sawStructuredError = client.looksLikeErrorEnvelope(parsed)
-  } catch {
-    // 部分版本对非法参数返回非零退出码；此处只验证「信封可识别」这一路径。
-    sawStructuredError = true
+  if (!HAS_EXE) {
+    check('集成：结构化错误信封可被识别为错误（已跳过）', true)
+  } else {
+    let sawStructuredError = false
+    try {
+      const result = await callDriver('click', { x: 6, y: 6 }).catch((e) => e) // eslint-disable-line no-await-in-loop
+      const text = String(result.stdout ?? '')
+      const parsed = JSON.parse(text)
+      sawStructuredError = client.looksLikeErrorEnvelope(parsed)
+    } catch {
+      // 部分版本对非法参数返回非零退出码；此处只验证「信封可识别」这一路径。
+      sawStructuredError = true
+    }
+    check('集成：结构化错误信封可被识别为错误', sawStructuredError)
   }
-  check('集成：结构化错误信封可被识别为错误', sawStructuredError)
 }
 
 console.log(failures === 0 ? '\n冒烟全部通过 ✓' : `\n${failures} 项失败 ✗`)

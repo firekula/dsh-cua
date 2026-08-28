@@ -1,10 +1,10 @@
 # dsh-cua
 
-**DeepSeek Harness（DSH）的计算机控制插件：让 agent 安全地看见并操作这台电脑——UIA 元素级定位、默认后台投递不抢焦点、每一步可审批、可验证。**
+**DeepSeek Harness（DSH）的计算机控制插件：让 agent 安全地看见并操作这台电脑——无障碍元素级定位、默认后台投递不抢焦点、每一步可审批、可验证。**
 
 由 [cua-driver](https://github.com/trycua/cua)（trycua 开源的跨平台 computer-use 驱动，支持 macOS / Windows / Linux）提供底层能力：插件把驱动的原子操作封装成 14 个模型工具，全部走 DSH 原生的工具注册、审批面板与图片附件体系，不依赖 MCP。
 
-> 上游驱动是多端的；本插件当前打包并验证的是 **Windows x86_64** 二进制（`vendor/bin/`，`os` 字段限 win32）。macOS / Linux 支持待后续版本放置对应上游二进制后放开。
+> 上游驱动是同一套跨平台协议（元素树 Windows 下经 UIA、macOS 下经原生 Accessibility）。本插件自带 Windows x86_64 驱动二进制（`vendor/bin/`），开箱即用；macOS / Linux 经上游安装器全局安装驱动后由插件自动解析（macOS 的 TCC 授权绑定安装位置，自带二进制会被系统拒绝，故走安装器固定位置）。
 
 ## 能力
 
@@ -14,12 +14,12 @@
 |---|---|
 | `cua_status` | 驱动 daemon 是否在线；离线附启动指引 |
 | `cua_list_windows` / `cua_list_apps` | 顶层窗口清单（pid / window_id / 标题 / 边界）；运行中与已安装应用清单 |
-| `cua_window_state` | 指定窗口的 UIA 元素树快照：结构化 elements（`element_token`/role/label/frame）+ Markdown 树 + 窗口截图 |
+| `cua_window_state` | 指定窗口的无障碍元素树快照：结构化 elements（`element_token`/role/label/frame）+ Markdown 树 + 窗口截图 |
 | `cua_desktop_screenshot` | 主屏全屏截图（真实物理像素） |
 | `cua_zoom` | 放大窗口截图的局部区域（小字号 / 密集控件） |
 | `cua_verify_state` | 操作后断言验证：元素存在/启用/选中/值相等、窗口边界（容差 px）；结果三态 satisfied / unsatisfied / unknown，unknown 永不当作成功 |
 | `cua_click` / `cua_type_text` / `cua_press_key` / `cua_hotkey` / `cua_scroll` | 点击（左/右/中、双击三击）、输入文本、按键、组合键、滚动——目标可以是元素 token、窗口像素或桌面坐标 |
-| `cua_set_value` | 经 UIA ValuePattern 直接给控件赋值（比逐字键入可靠，写入后回读校验） |
+| `cua_set_value` | 经无障碍 SetValue 直接给控件赋值（比逐字键入可靠，写入后回读校验） |
 | `cua_bring_to_front` | 把窗口带到前台（后台投递路径通常用不到） |
 
 **寻址优先级**（与驱动一致的推荐工作流）：
@@ -32,7 +32,7 @@
 
 ## 工作方式
 
-一次工具调用 = spawn 一次自带的 `cua-driver.exe` CLI（stdin 送 JSON、stdout 收 JSON），实际状态常驻 `\\.\pipe\cua-driver` 后面的驱动 daemon 里。CLI 进程无状态、崩溃即隔离，绝不把 harness 拖下水；驱动的域级错误（如快照过期）以结构化信封返回并转成模型可读消息。
+一次工具调用 = spawn 一次驱动 CLI（stdin 送 JSON、stdout 收 JSON），实际状态常驻本地 daemon 里（端点按平台不同：macOS `~/Library/Caches/cua-driver/cua-driver.sock`，Linux `~/.cache/cua-driver/cua-driver.sock`，Windows `\\.\pipe\cua-driver`）。CLI 进程无状态、崩溃即隔离，绝不把 harness 拖下水；驱动的域级错误（如快照过期）以结构化信封返回并转成模型可读消息。
 
 ## 示例输出
 
@@ -75,16 +75,32 @@ cua_verify_state { "pid": 4242, "window_id": 197001, "expect": [
 
 ## 安装
 
-前置：一个带 profile 的 DSH 部署；驱动 daemon 在线（`cua-driver serve`，或 `cua-driver autostart enable` 注册登录自启）。没有全局驱动时可直接用插件自带副本：`vendor\bin\cua-driver.exe serve`。
+**前置**：一个带 profile 的 DSH 部署；驱动 daemon 在线。
 
-```powershell
-dsh plugin --profile web add link:C:/path/to/dsh-cua
+```sh
+# macOS：先全局安装驱动（装到 ~/.local/bin 并接入 PATH），再授权、启动
+/bin/bash -c "$(curl -fsSL https://cua.ai/driver/install.sh)"
+cua-driver permissions grant   # 辅助功能 + 屏幕录制，每个 macOS 会话只需一次
+cua-driver serve               # 或 cua-driver autostart enable 注册登录自启
+
+# Linux：同款安装脚本，然后启动
+/bin/bash -c "$(curl -fsSL https://cua.ai/driver/install.sh)"
+cua-driver serve
+
+# Windows（PowerShell）：自带二进制开箱即用
+vendor\bin\windows-x86_64\cua-driver.exe serve
+# 或全局安装后：cua-driver serve（或 cua-driver autostart enable 注册登录自启）
+```
+
+```sh
+dsh plugin --profile web add github:hfloveyy/dsh-cua
+# 或本地开发版：dsh plugin --profile web add link:/path/to/dsh-cua
 # 或发布到 npm 后：dsh plugin --profile web add dsh-cua
 ```
 
 插件的 bundle patch 会自动挂载，无需手改组合配置。**重启 `dsh web`** 后验证：
 
-```powershell
+```sh
 dsh --profile web --dump-config   # 输出应包含 id: cua / name: dsh-cua
 ```
 
@@ -100,12 +116,12 @@ dsh --profile web --dump-config   # 输出应包含 id: cua / name: dsh-cua
     requireApproval: true   # 每个动作前弹审批面板（false 可关闭插件层审批）
     disabled: false         # true = 不注册任何工具
     timeoutMs: 15000        # 工具协作式超时（2000–120000）
-    maxElements: 200        # 单次快照转发的 UIA 元素上限（20–5000）
+    maxElements: 200        # 单次快照转发的元素上限（20–5000）
     maxRows: 120            # list_windows/list_apps 单次转发行数上限（10–1000）
-    binDir: ""              # 自定义 cua-driver.exe 目录；留空用 vendor/bin/
+    binDir: ""              # 自定义驱动二进制目录；留空按优先级解析
 ```
 
-环境变量 `CUA_DRIVER_BIN` 也可指定驱动可执行文件路径。
+驱动二进制解析优先级：`binDir` 配置 → 环境变量 `CUA_DRIVER_BIN` → 插件自带副本（Windows x64）→ `PATH` 上的全局 `cua-driver`。macOS / Linux 没有自带副本（TCC 授权绑定安装位置，见上），请用上游安装器全局安装或用前两种方式显式指定。
 
 ## 安全模型
 
@@ -121,16 +137,16 @@ cua-driver 默认发送内容无关遥测，介意可在终端执行一次 `cua-
 ```sh
 npm install
 npm run build          # tsc：src/ → lib/
-node tests/smoke.mjs   # 冒烟：纯函数单测 + 真实 CLI 协议集成（需 daemon 在线）
+node tests/smoke.mjs   # 冒烟：纯函数单测 + 真实 CLI 协议集成（集成层需驱动二进制与 daemon，缺失时自动跳过）
 node tests/e2e.mjs     # 完整 web profile 启动，验证 loader 树 / 工具执行 / 图片附件（需 daemon 在线）
 ```
 
 ## 已知限制
 
-- 当前仅 Windows（跟随本插件打包的驱动二进制）；上游驱动本身跨平台，扩展其余平台只需替换 `vendor/bin` 内容、放开 `package.json` 的 `os` 字段。
+- 插件自带二进制的平台：Windows x64；macOS 与 Linux 走全局驱动（上游 `install.sh`）。
 - 多显示器暂只覆盖主屏（跟随上游当前版本行为）。
 - 驱动的浏览器 CDP 工具组（browser_navigate / browser_click 等）与应用生命周期组（launch_app / invoke_menu）尚未注册，欢迎 PR——往 `PassToolSpec` 加一条即可。
 
 ## License
 
-MIT。`vendor/bin` 内的 cua-driver 二进制来自 [trycua/cua](https://github.com/trycua/cua) 上游 release，依其许可证分发。
+MIT。`vendor/bin` 内的 cua-driver 二进制来自 [trycua/cua](https://github.com/trycua/cua) 上游 release（版本与校验见 `vendor/bin/README.md`），依其许可证分发。

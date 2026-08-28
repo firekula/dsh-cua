@@ -20,7 +20,6 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
-  DAEMON_SETUP_GUIDE,
   GRACE_MS,
   parseCallOutput,
   runCua,
@@ -29,6 +28,7 @@ import {
   type CuaImageRef,
   type CuaValue,
 } from './client.js'
+import { daemonSetupGuide } from './platform.js'
 
 /**
  * The plugin authors tool options against local structural mirrors (CuaValue,
@@ -396,7 +396,7 @@ function defaultSummary(data: unknown): string {
 // ---------------------------------------------------------------------------
 // public registration entry
 
-/** Snapshot 参数上限：UIA 树会被模型端的 max_elements 夹紧。 */
+/** Snapshot 参数上限：元素树会被模型端的 max_elements 夹紧。 */
 export function registerCuaTools(
   ctx: Context,
   cfg: ResolvedConfig,
@@ -430,7 +430,7 @@ export function registerCuaTools(
     name: 'cua_list_apps',
     driverName: 'list_apps',
     description:
-      '列出正在运行以及已安装未运行的 Windows 应用（含 per-app 状态标志）。用于按应用名找 pid，再进入窗口级操作。',
+      '列出正在运行以及已安装未运行的应用（含 per-app 状态标志）。用于按应用名找 pid，再进入窗口级操作。',
     parameters: {},
     act: false,
     buildPayload: () => ({}),
@@ -447,18 +447,19 @@ export function registerCuaTools(
     name: 'cua_window_state',
     driverName: 'get_window_state',
     description:
-      '观察一个指定窗口：走 UIA 元素树，同时返回结构化 elements 数组（element_token / role / label / frame / enabled）与 Markdown 树，'
-      + '默认附带窗口截图作为 grounding。元素树为空（degraded）时说明该窗口是非 UIA 表面，应改用像素路径。'
+      '观察一个指定窗口：走无障碍元素树（Windows 下为 UIA、macOS 下为原生 Accessibility，协议一致），'
+      + '返回结构化 elements 数组（element_token / role / label / frame / enabled）与 Markdown 树，'
+      + '默认附带窗口截图作为 grounding。元素树为空（degraded）时说明该窗口是非无障碍表面，应改用像素路径。'
       + '任何后续动作都应基于最新快照的 element_token。',
     parameters: {
       pid: { type: 'number', required: true, description: '目标进程 id（来自 cua_list_windows / cua_list_apps）。' },
-      window_id: { type: 'number', required: true, description: '目标窗口句柄 HWND（必须属于该 pid）。' },
+      window_id: { type: 'number', required: true, description: '目标窗口 id（必须属于该 pid）。' },
       query: {
         type: 'string',
         description: '大小写不敏感子串过滤：只保留匹配元素及其祖先链（原始 index 不变）。大树上先过滤再看。',
       },
-      max_elements: { type: 'number', description: `最多遍历的 UIA 节点数（默认 ${Math.min(500, cfg.maxElements)}，上限 ${cfg.maxElements}）。` },
-      max_depth: { type: 'number', description: 'UIA 树深度上限（默认 25）。菜单/Electron 深树可调低。' },
+      max_elements: { type: 'number', description: `最多遍历的元素节点数（默认 ${Math.min(500, cfg.maxElements)}，上限 ${cfg.maxElements}）。` },
+      max_depth: { type: 'number', description: '元素树深度上限（默认 25）。菜单/Electron 深树可调低。' },
       include_screenshot: { type: 'boolean', description: '是否附带窗口截图（默认 true，作为坐标换算依据）。' },
     },
     act: false,
@@ -537,7 +538,7 @@ export function registerCuaTools(
     name: 'cua_click',
     driverName: 'click',
     description:
-      `在目标窗口上点击（左/右/中键，支持双击三击）。${commonHint} 默认后台投递：优先经 UIA Invoke 不抢焦点，不可行时驱动会用结构化错误提示而不是强行切前台。`,
+      `在目标窗口上点击（左/右/中键，支持双击三击）。${commonHint} 默认后台投递：优先经无障碍 Invoke/action 路径不抢焦点，不可行时驱动会用结构化错误提示而不是强行切前台。`,
     parameters: {
       element_token: { type: 'string', description: '来自 cua_window_state 的元素句柄（推荐）。提供它就不要传坐标。' },
       pid: { type: 'number', description: '窗口目标的进程 id。' },
@@ -568,7 +569,7 @@ export function registerCuaTools(
     name: 'cua_type_text',
     driverName: 'type_text',
     description:
-      `向目标写入 Unicode 文本。带 element_token 时经 ValuePattern 写入并回读校验；否则逐字符投递到窗口焦点控件。${commonHint}`,
+      `向目标写入 Unicode 文本。带 element_token 时经无障碍 SetValue 写入并回读校验；否则逐字符投递到窗口焦点控件。${commonHint}`,
     parameters: {
       text: { type: 'string', required: true, description: '要输入的文本（≤10000 字符）。' },
       element_token: { type: 'string', description: '目标输入框元素（推荐）。' },
@@ -682,9 +683,9 @@ export function registerCuaTools(
     name: 'cua_set_value',
     driverName: 'set_value',
     description:
-      '通过 UIA ValuePattern 直接给控件赋值（比逐字输入更可靠）：provide element_token 或 pid+window_id+snapshot_id+element_index。赋值类型由控件原生类型自动转换。',
+      '通过无障碍 SetValue 直接给控件赋值（比逐字输入更可靠）：provide element_token 或 pid+window_id+snapshot_id+element_index。赋值类型由控件原生类型自动转换。',
     parameters: {
-      value: { type: 'string', required: true, description: '新值（≤4096 字符），UIA 会自动转换为目标类型。' },
+      value: { type: 'string', required: true, description: '新值（≤4096 字符），驱动会按控件原生类型自动转换。' },
       element_token: { type: 'string', description: '来自快照的元素句柄（推荐）。' },
       pid: { type: 'number', description: '使用 element_index 寻址时的目标进程 id。' },
       window_id: { type: 'number', description: '使用 element_index 寻址时的窗口句柄。' },
@@ -784,7 +785,7 @@ export function registerCuaTools(
       return {
         source: 'cua-driver',
         tool: 'status',
-        summary: offline ? `daemon 离线。${DAEMON_SETUP_GUIDE}` : 'daemon 在线。',
+        summary: offline ? `daemon 离线。${daemonSetupGuide()}` : 'daemon 在线。',
         data: { online: !offline, detail: stripCliNoise(run.stdout) },
         image: null,
       }

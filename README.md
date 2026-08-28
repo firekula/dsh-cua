@@ -21,11 +21,27 @@
 
 ## 安装
 
-```powershell
-# 1) 安装插件到你的 profile
-dsh plugin --profile web add link:C:/path/to/dsh-cua
+### 方式 A：`dsh plugin add`（官方命令）
 
-# 2) 启动常驻 daemon（或注册登录自启）
+```powershell
+dsh plugin --profile web add link:C:/path/to/dsh-cua
+```
+
+该命令在 profile 内转发给 pnpm，效果与方式 B 等价。
+
+### 方式 B：手动 link（本仓库的实际交付路径，已验证）
+
+编辑 `~/.dsh/profiles/web/package.json`，在 `dsh.profile.bundles` 数组加入 `"dsh-cua"`，在 `dependencies` 加入：
+
+```json
+"dsh-cua": "link:C:/Users/Administrator/Desktop/dsh/dsh-cua"
+```
+
+然后在 profile 目录执行 `pnpm install --ignore-scripts`。装完后 `dsh-cua` 会以符号链接出现在 `~/.dsh/profiles/web/node_modules/`，bundle 层自动 insert 插件（无需改 `cordis.patch.yml`）。
+
+### 启动 daemon
+
+```powershell
 cua-driver serve            # 前台运行
 cua-driver autostart enable # 登录自启（Windows 计划任务）
 ```
@@ -36,10 +52,11 @@ cua-driver autostart enable # 登录自启（Windows 计划任务）
 & "C:\path\to\dsh-cua\vendor\bin\cua-driver.exe" serve
 ```
 
-验证安装：
+### 验证安装
 
 ```powershell
-dsh --profile web --dump-config   # 组合配置中应同时出现 computer-use 无关的 cua 条目与 tools
+dsh --profile web --dump-config
+# 输出中应包含 id: cua / name: dsh-cua 的插件条目
 ```
 
 在对话里让 agent「列出当前所有窗口并截图看看桌面上有什么」即为通。

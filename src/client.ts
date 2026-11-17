@@ -16,7 +16,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
-import type { JsonValue } from '@deepseek-ai/dsh-tools'
+import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import { daemonSetupGuide } from './platform.js'
 
 /** One completed spawn with captured output and exit code. */
@@ -33,6 +33,17 @@ export const STDERR_MAX_BYTES = 16_000
 /** Terminate-escalation grace (ms), handed to the subprocess seam. */
 export const GRACE_MS = 2_000
 
+/**
+ * Stable driver session label for this Harness process.
+ *
+ * Every tool call spawns a fresh CLI process, so the driver's implicit
+ * per-transport session would not connect one call's snapshot/zoom context to
+ * the next. An explicit label, unique per Harness process, gives the whole tool
+ * suite one session (element-token and zoom continuations keep working) without
+ * colliding with another concurrently running Harness.
+ */
+export const SESSION_LABEL = `dsh-cua-${process.pid}`
+
 /** Spawn `cua-driver.exe` with fixed argv, optional JSON payload over stdin. */
 export async function runCua(
   ctx: Context,
@@ -46,7 +57,8 @@ export async function runCua(
   if (exec.signal.aborted) {
     throw new Error(`${toolName} was aborted before completion`)
   }
-  const wantsStdin = payload !== undefined
+  const body = payload === undefined ? undefined : { ...payload, session: SESSION_LABEL }
+  const wantsStdin = body !== undefined
   const spec: SubprocessSpawnSpec = {
     argv: [exePath, ...argvTail],
     cwd: process.cwd(),
@@ -68,7 +80,7 @@ export async function runCua(
   if (wantsStdin && handle.stdin !== undefined) {
     // Fire-and-forget the write: the driver reads stdin to EOF; backpressure
     // of a few KB never matters here and awaiting stream events adds races.
-    handle.stdin.end(JSON.stringify(payload), 'utf8')
+    handle.stdin.end(JSON.stringify(body), 'utf8')
   }
   let outcome: Awaited<typeof handle.done>
   try {
@@ -105,28 +117,43 @@ export interface CuaImageRef {
   attachmentId: string
   mediaType: string
   bytes: number
-  width: number | null
-  height: number | null
+  width: number
+  height: number
   name: string
 }
 
-/** True when the parsed output looks like a driver error envelope. */
+/**
+ * True when the parsed output is a driver refusal.
+ *
+ * The current driver answers refusals with `{ status: "refused", refusal: {
+ * code, message }, hint }`, while older builds emitted a bare
+ * `{ code, message | suggestion }` envelope. Both must fail closed: a refusal
+ * mistaken for success would silently drop a stale-token or permission error.
+ */
 export function looksLikeErrorEnvelope(parsed: unknown): boolean {
-  if (typeof parsed !== 'object' || parsed === null) return false
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false
   const record = parsed as Record<string, unknown>
+  if (record.status === 'refused') return true
+  if (typeof record.refusal === 'object' && record.refusal !== null) return true
   if (typeof record.code !== 'string' || record.code.length === 0) return false
-  if ('suggestion' in record || 'message' in record) return true
-  // Observed success shapes that carry a bare `code` are none so far; keep a
-  // conservative allow-list in case future results need to opt out.
-  return true
+  // A success payload never carries an explanatory field beside `code`.
+  return 'suggestion' in record || 'message' in record || 'reason' in record || 'hint' in record
 }
 
-/** Build a model-facing error from a structured driver envelope. */
+/** Build a model-facing error from a structured driver refusal or legacy envelope. */
 export function describeErrorEnvelope(toolName: string, parsed: Record<string, unknown>): Error {
-  const code = String(record_string(parsed.code))
-  const suggestion = typeof parsed.suggestion === 'string' ? parsed.suggestion : ''
-  const message = typeof parsed.message === 'string' ? parsed.message : ''
-  const tail = [message, suggestion].filter((part) => part.length > 0).join(' — ')
+  const refusal = typeof parsed.refusal === 'object' && parsed.refusal !== null
+    ? parsed.refusal as Record<string, unknown>
+    : undefined
+  const code = String(record_string(refusal?.code ?? parsed.code))
+  // Refusal details live in `refusal`; the top-level `hint` still explains them.
+  const parts = ['message', 'suggestion', 'reason', 'hint'].map((key) => {
+    const inside = refusal?.[key]
+    const outside = parsed[key]
+    if (typeof inside === 'string' && inside.length > 0) return inside
+    return typeof outside === 'string' ? outside : ''
+  })
+  const tail = parts.filter((part) => part.length > 0).join(' — ')
   return new Error(`cua ${toolName}: [${code}]${tail.length > 0 ? ` ${tail}` : ''}`)
 }
 

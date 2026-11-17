@@ -14,7 +14,7 @@
  * @module dsh-cua/client
  */
 import type { Context } from '@deepseek-ai/cordis';
-import type { JsonValue } from '@deepseek-ai/dsh-tools';
+import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 /** One completed spawn with captured output and exit code. */
 export interface CuaRun {
     exitCode: number;
@@ -27,6 +27,16 @@ export declare const RAW_OUTPUT_MAX_BYTES = 4000000;
 export declare const STDERR_MAX_BYTES = 16000;
 /** Terminate-escalation grace (ms), handed to the subprocess seam. */
 export declare const GRACE_MS = 2000;
+/**
+ * Stable driver session label for this Harness process.
+ *
+ * Every tool call spawns a fresh CLI process, so the driver's implicit
+ * per-transport session would not connect one call's snapshot/zoom context to
+ * the next. An explicit label, unique per Harness process, gives the whole tool
+ * suite one session (element-token and zoom continuations keep working) without
+ * colliding with another concurrently running Harness.
+ */
+export declare const SESSION_LABEL: string;
 /** Spawn `cua-driver.exe` with fixed argv, optional JSON payload over stdin. */
 export declare function runCua(ctx: Context, exec: {
     signal: AbortSignal;
@@ -45,13 +55,20 @@ export interface CuaImageRef {
     attachmentId: string;
     mediaType: string;
     bytes: number;
-    width: number | null;
-    height: number | null;
+    width: number;
+    height: number;
     name: string;
 }
-/** True when the parsed output looks like a driver error envelope. */
+/**
+ * True when the parsed output is a driver refusal.
+ *
+ * The current driver answers refusals with `{ status: "refused", refusal: {
+ * code, message }, hint }`, while older builds emitted a bare
+ * `{ code, message | suggestion }` envelope. Both must fail closed: a refusal
+ * mistaken for success would silently drop a stale-token or permission error.
+ */
 export declare function looksLikeErrorEnvelope(parsed: unknown): boolean;
-/** Build a model-facing error from a structured driver envelope. */
+/** Build a model-facing error from a structured driver refusal or legacy envelope. */
 export declare function describeErrorEnvelope(toolName: string, parsed: Record<string, unknown>): Error;
 /** Strip noisy one-shot CLI banners ("content-free product telemetry…"). */
 export declare function stripCliNoise(text: string): string;

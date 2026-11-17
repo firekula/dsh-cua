@@ -99,6 +99,20 @@ check('stripCliNoise 过滤遥测横幅并保留正文', stripped === 'keep me')
     err instanceof Error && err.message.includes('[stale_snapshot]') && err.message.includes('fresh snapshot'), String(err))
 }
 
+// 当前驱动的拒绝信封：{ status:"refused", refusal:{ code, message }, hint }
+check('looksLikeErrorEnvelope: status=refused 命中',
+  client.looksLikeErrorEnvelope({ status: 'refused', refusal: { code: 'stale_element_token', message: 'stale' }, hint: 'read again' }) === true)
+check('looksLikeErrorEnvelope: code+reason（zoom 上下文缺失）命中',
+  client.looksLikeErrorEnvelope({ code: 'screenshot_context_missing', pid: 1, reason: 'window_never_read', window_id: 2 }) === true)
+check('looksLikeErrorEnvelope: 成功 verify_state 形态不误报',
+  client.looksLikeErrorEnvelope({ status: 'satisfied', predicates: [{ status: 'satisfied' }] }) === false)
+
+{
+  const err = client.describeErrorEnvelope('cua_click', { status: 'refused', refusal: { code: 'stale_element_token', message: 'element_token is stale' }, hint: 'read the window again' })
+  check('describeErrorEnvelope 读 refusal.code 与 hint',
+    err.message.includes('[stale_element_token]') && err.message.includes('stale') && err.message.includes('read the window'), String(err))
+}
+
 // parseCallOutput 对 JSON 内嵌错误信封抛出描述性错误
 try {
   client.parseCallOutput('t', { exitCode: 0, stdout: '{"code":"bad","suggestion":"do x"}\n', stderr: '' })

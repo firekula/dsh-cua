@@ -159,9 +159,23 @@ interface ScreenshotOutcome {
   value: CuaValue
 }
 
+/** Declared media type of an inline screenshot payload, defaulting to PNG. */
+function screenshotMediaType(data: Record<string, unknown>): { mediaType: string; extension: string } {
+  const declared = typeof data.screenshot_mime_type === 'string' ? data.screenshot_mime_type
+    : typeof data.mime_type === 'string' ? data.mime_type : 'image/png'
+  if (declared === 'image/jpeg') return { mediaType: declared, extension: 'jpg' }
+  if (declared === 'image/webp') return { mediaType: declared, extension: 'webp' }
+  if (declared === 'image/gif') return { mediaType: declared, extension: 'gif' }
+  return { mediaType: 'image/png', extension: 'png' }
+}
+
 /**
- * Run a driver call whose response contains a PNG, persist it as a dsh image
- * attachment and reference it from the returned value.
+ * Run a driver call whose response carries a screenshot, persist it as a dsh
+ * image attachment and reference it from the returned value.
+ *
+ * Two transports exist: tools that accept `screenshot_out_file` (window and
+ * desktop state) write the image themselves, while `zoom` rejects that
+ * argument and returns the bytes inline as base64 instead.
  */
 async function callWithScreenshot(
   ctx: Context & { attachments?: AttachmentsLike },
@@ -173,11 +187,13 @@ async function callWithScreenshot(
   payload: Record<string, unknown>,
   summary: string,
   graceMs: number,
+  supportsOutFile = true,
 ): Promise<ScreenshotOutcome> {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-cua-'))
   try {
-    const pngPath = join(dir, 'capture.png')
-    const run = await runCua(ctx, exec, pluginTool, cfg.exePath, [...argvTail, driverTool], { ...payload, screenshot_out_file: pngPath }, graceMs)
+    const outPath = join(dir, 'capture.png')
+    const request = supportsOutFile ? { ...payload, screenshot_out_file: outPath } : payload
+    const run = await runCua(ctx, exec, pluginTool, cfg.exePath, [...argvTail, driverTool], request, graceMs)
     let parsed: unknown
     try {
       parsed = parseCallOutput(driverTool, run)
@@ -186,21 +202,39 @@ async function callWithScreenshot(
     }
     const data: Record<string, unknown> = typeof parsed === 'object' && parsed !== null ? { ...(parsed as Record<string, unknown>) } : {}
     let image: CuaImageRef | null = null
+
+    // Inline base64 screenshots still carry the image bytes; the `*_png_b64`
+    // name is historical and the declared MIME type is authoritative.
+    const inline = typeof data.screenshot_png_b64 === 'string'
+      ? data.screenshot_png_b64
+      : typeof data.screenshot_base64 === 'string' ? data.screenshot_base64 : null
     const writtenPath = typeof data.screenshot_file_path === 'string' ? data.screenshot_file_path : null
-    if (writtenPath !== null && ctx.attachments !== undefined) {
-      const bytes = await readFile(writtenPath)
-      const ref = await ctx.attachments.saveImage({ data: bytes, mediaType: 'image/png', name: `${driverTool}.png` })
+    let bytes: Buffer | null = null
+    if (writtenPath !== null) bytes = await readFile(writtenPath)
+    else if (inline !== null) bytes = Buffer.from(inline, 'base64')
+
+    if (bytes !== null && ctx.attachments !== undefined) {
+      const { mediaType, extension } = writtenPath !== null
+        ? { mediaType: 'image/png', extension: 'png' }
+        : screenshotMediaType(data)
+      const name = `${driverTool}.${extension}`
+      const ref = await ctx.attachments.saveImage({ data: bytes, mediaType, name })
+      // The stored reference carries the verified intrinsic dimensions; a
+      // synthesized one (null width/height) would break later image reads and
+      // the request-size projection that consumes it.
       image = {
         attachmentId: ref.attachmentId,
         mediaType: ref.mediaType,
-        bytes: typeof ref.bytes === 'number' ? ref.bytes : bytes.byteLength,
-        width: typeof data.screenshot_width === 'number' ? data.screenshot_width : null,
-        height: typeof data.screenshot_height === 'number' ? data.screenshot_height : null,
-        name: `${driverTool}.png`,
+        bytes: ref.bytes,
+        width: ref.width,
+        height: ref.height,
+        name: ref.name ?? name,
       }
-    } else if (ctx.attachments === undefined && writtenPath !== null) {
-      // Profile without the attachment service: degrade to a file pointer.
-      data._plugin_note = '当前 profile 无 attachment 服务；PNG 已写到驱动侧临时路径并即将清理。'
+    } else if (ctx.attachments === undefined && (writtenPath !== null || inline !== null)) {
+      // Profile without the attachment service: degrade to a pointer note.
+      data._plugin_note = writtenPath !== null
+        ? '当前 profile 无 attachment 服务；PNG 已写到驱动侧临时路径并即将清理。'
+        : '当前 profile 无 attachment 服务；驱动返回的内联截图未被保存。'
     }
     return { value: { source: 'cua-driver', tool: driverTool, summary, data: data as never, image } }
   } finally {
@@ -231,8 +265,8 @@ interface LocalImageRef {
   attachmentId: string
   mediaType: string
   bytes: number
-  width: number | null
-  height: number | null
+  width: number
+  height: number
   name: string
 }
 
@@ -241,7 +275,10 @@ interface AttachmentsLike {
   saveImage(input: { data: Buffer; mediaType: string; name: string }): Promise<{
     attachmentId: string
     mediaType: string
-    bytes?: number
+    bytes: number
+    width: number
+    height: number
+    name?: string
   }>
 }
 
@@ -266,8 +303,8 @@ interface CuaOutputSchema {
                 attachmentId: { type: 'string' }
                 mediaType: { type: 'string' }
                 bytes: { type: 'number' }
-                width: { oneOf: [{ type: 'number' }, { type: 'null' }] }
-                height: { oneOf: [{ type: 'number' }, { type: 'null' }] }
+                width: { type: 'number' }
+                height: { type: 'number' }
                 name: { type: 'string' }
               }
             },
@@ -297,8 +334,8 @@ function outputSchema(hasImage: boolean): CuaOutputSchema {
                   attachmentId: { type: 'string' },
                   mediaType: { type: 'string' },
                   bytes: { type: 'number' },
-                  width: { oneOf: [{ type: 'number' }, { type: 'null' }] },
-                  height: { oneOf: [{ type: 'number' }, { type: 'null' }] },
+                  width: { type: 'number' },
+                  height: { type: 'number' },
                   name: { type: 'string' },
                 },
               },
@@ -321,6 +358,8 @@ interface PassToolSpec {
   transform?: (data: unknown) => unknown
   summarize?: (data: unknown, args: Record<string, unknown>) => string
   image?: boolean
+  /** Whether the driver verb accepts `screenshot_out_file`; `zoom` returns inline base64 instead. */
+  screenshotOutFile?: boolean
 }
 
 /** Register one passthrough tool bound to a driver verb. */
@@ -346,6 +385,7 @@ function registerPassTool(
         payload,
         spec.summarize?.(undefined, args) ?? '完成。',
         graceMs,
+        spec.screenshotOutFile !== false,
       )
       return outcome.value
     }
@@ -476,6 +516,10 @@ export function registerCuaTools(
         max_elements: maxElements,
         max_depth: assertInt(args, 'max_depth', 1, 60),
         include_screenshot: typeof args.include_screenshot === 'boolean' ? args.include_screenshot : undefined,
+        // Current drivers emit Markdown by default and only include the
+        // structured `elements` rows this suite addresses by when an explicit
+        // representation is requested.
+        tree_format: 'both',
       })
     },
     summarize: (data) => {
@@ -483,6 +527,7 @@ export function registerCuaTools(
       const r = data as Record<string, unknown>
       const counts = `elements ${String(r.returned_element_count ?? '?')}/${String(r.total_element_count ?? '?')}`
       if (r.degraded === true) return `快照降级：${String(r.degraded_reason ?? '未知原因')}（${counts}）。${escalationHint(r.escalation)}`
+      if (r.truncated === true) return `窗口快照完成（snapshot_id=${String(r.snapshot_id ?? '?')}，${counts}，达到 max_elements 上限已截断）。`
       return `窗口快照完成（snapshot_id=${String(r.snapshot_id ?? '?')}，${counts}）。`
     },
   })
@@ -518,6 +563,7 @@ export function registerCuaTools(
     },
     act: false,
     image: true,
+    screenshotOutFile: false,
     buildPayload: (args) => {
       const pid = assertInt(args, 'pid', 0)
       const windowId = assertInt(args, 'window_id', 0)
@@ -683,14 +729,11 @@ export function registerCuaTools(
     name: 'cua_set_value',
     driverName: 'set_value',
     description:
-      '通过无障碍 SetValue 直接给控件赋值（比逐字输入更可靠）：provide element_token 或 pid+window_id+snapshot_id+element_index。赋值类型由控件原生类型自动转换。',
+      '通过无障碍 SetValue 直接给控件赋值（比逐字输入更可靠）：必须提供来自最新 cua_window_state 的 element_token。赋值类型由控件原生类型自动转换，过期 token 显式报错。',
     parameters: {
       value: { type: 'string', required: true, description: '新值（≤4096 字符），驱动会按控件原生类型自动转换。' },
-      element_token: { type: 'string', description: '来自快照的元素句柄（推荐）。' },
-      pid: { type: 'number', description: '使用 element_index 寻址时的目标进程 id。' },
-      window_id: { type: 'number', description: '使用 element_index 寻址时的窗口句柄。' },
-      snapshot_id: { type: 'string', description: '生成该 element_index 的快照 id（如 s0a1b2c3d）。过期会 fail closed。' },
-      element_index: { type: 'number', description: '快照中的元素下标。' },
+      element_token: { type: 'string', required: true, description: '来自 cua_window_state 的元素句柄（携带窗口绑定，过期 fail closed）。' },
+      window_id: { type: 'number', description: '可选：显式绑定窗口句柄，缺省由 element_token 携带。' },
     },
     act: true,
     buildPayload: (args) => {
@@ -699,20 +742,11 @@ export function registerCuaTools(
         throw new TypeError('cua_set_value: "value" 必须是 ≤4096 字符的字符串')
       }
       const token = args.element_token
-      const index = assertInt(args, 'element_index', 0)
-      const pid = assertInt(args, 'pid', 0)
-      const windowId = assertInt(args, 'window_id', 0)
-      const snapshotId = args.snapshot_id
-      let target: Record<string, unknown>
-      if (typeof token === 'string' && token.length > 0) {
-        target = { element_token: token }
-        if (windowId !== undefined) target.window_id = windowId
-      } else if (index !== undefined && pid !== undefined && windowId !== undefined && typeof snapshotId === 'string' && /^s[0-9a-f]{6,12}$/.test(snapshotId)) {
-        target = { pid, window_id: windowId, snapshot_id: snapshotId, element_index: index }
-      } else {
-        throw new TypeError('cua_set_value: 需要 element_token，或完整的 pid+window_id+snapshot_id+element_index 组合')
+      if (typeof token !== 'string' || token.length === 0) {
+        throw new TypeError('cua_set_value: 需要 element_token（来自最新 cua_window_state 快照）')
       }
-      return { ...target, value }
+      const windowId = assertInt(args, 'window_id', 0)
+      return compact({ element_token: token, window_id: windowId, value })
     },
   })
 
@@ -746,9 +780,19 @@ export function registerCuaTools(
       if (typeof data === 'object' && data !== null) {
         const r = data as Record<string, unknown>
         if (typeof r.summary === 'string') return r.summary
-        const results = Array.isArray(r.results) ? (r.results as unknown[]) : []
-        const satisfied = results.filter((it) => (it as { state?: string }).state === 'satisfied').length
-        if (results.length > 0) return `${satisfied}/${results.length} 个谓词 satisfied。`
+        // Current drivers report `predicates[].status` plus a top-level
+        // `status`; older builds reported `results[].state`.
+        const rows = Array.isArray(r.predicates) ? r.predicates as unknown[]
+          : Array.isArray(r.results) ? r.results as unknown[] : []
+        const stateOf = (row: unknown): string | undefined => {
+          const record = row as { status?: unknown; state?: unknown }
+          return typeof record.status === 'string' ? record.status : typeof record.state === 'string' ? record.state : undefined
+        }
+        const satisfied = rows.filter((row) => stateOf(row) === 'satisfied').length
+        if (rows.length > 0) {
+          const overall = typeof r.status === 'string' ? `总判定 ${r.status}，` : ''
+          return `${overall}${satisfied}/${rows.length} 个谓词 satisfied。`
+        }
       }
       return '验证完成。'
     },

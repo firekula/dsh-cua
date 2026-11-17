@@ -34,6 +34,14 @@
 
 一次工具调用 = spawn 一次驱动 CLI（stdin 送 JSON、stdout 收 JSON），实际状态常驻本地 daemon 里（端点按平台不同：macOS `~/Library/Caches/cua-driver/cua-driver.sock`，Linux `~/.cache/cua-driver/cua-driver.sock`，Windows `\\.\pipe\cua-driver`）。CLI 进程无状态、崩溃即隔离，绝不把 harness 拖下水；驱动的域级错误（如快照过期）以结构化信封返回并转成模型可读消息。
 
+因为每次调用都是独立进程，插件给整套工具用一个按 harness 进程号生成的驱动 session 标签（`dsh-cua-<pid>`）：一次 `cua_window_state` 产生的快照 / zoom 上下文能被后续调用继续使用，同时不会和另一个并发 harness 串台。截图有两条落地路径：窗口与桌面状态由驱动按 `screenshot_out_file` 直接写文件，`cua_zoom` 则由驱动返回内联 base64，插件解码后同样存入 dsh 图片附件。
+
+## 兼容性
+
+- **DSH**：声明 `engines.dsh` 为 `>=0.2.2-rc.3 <0.3.0`，按 0.2.2-rc.3 的工具注册 / 输出 schema / 审批闸门 / attachment / subprocess 接口验证（含 `tests/compat.mjs`）。
+- **驱动**：自带 Windows x64 驱动 `0.37.0`（`vendor/bin/windows-x86_64`），与当前 daemon 协议一致；daemon 需由同版本或兼容版本的 `cua-driver serve` 提供。
+- 工具契约按驱动 0.37 对齐：`get_window_state` 显式请求 `tree_format:"both"` 才返回结构化 `elements`；`zoom` 用内联截图；`set_value` 只接受 `element_token`；`verify_state` 的新旧结果形态都能读。
+
 ## 示例输出
 
 **以下为构造的示例数据**，仅用于展示输出形态（非真实采集）。
@@ -44,31 +52,31 @@
 {
   "source": "cua-driver",
   "tool": "get_window_state",
-  "summary": "窗口快照完成（snapshot_id=42，elements 88/88）。",
+  "summary": "窗口快照完成（snapshot_id=s00000042，elements 88/88）。",
   "data": {
-    "snapshot_id": 42,
+    "snapshot_id": "s00000042",
     "total_element_count": 88,
     "returned_element_count": 88,
     "elements": [
-      { "index": 0,  "element_token": "e0",  "role": "Window", "label": "示例计算器" },
-      { "index": 17, "element_token": "e17", "role": "Button", "label": "7", "frame": { "x": 24,  "y": 210, "width": 72, "height": 56 }, "enabled": true },
-      { "index": 21, "element_token": "e21", "role": "Button", "label": "+", "frame": { "x": 184, "y": 210, "width": 72, "height": 56 }, "enabled": true },
-      { "index": 30, "element_token": "e30", "role": "Edit",   "label": "结果", "value": "0", "enabled": true }
+      { "index": 0,  "element_token": "s00000042:0",  "role": "Window", "label": "示例计算器" },
+      { "index": 17, "element_token": "s00000042:17", "role": "Button", "label": "7", "frame": { "x": 24,  "y": 210, "w": 72, "h": 56 }, "enabled": true },
+      { "index": 21, "element_token": "s00000042:21", "role": "Button", "label": "+", "frame": { "x": 184, "y": 210, "w": 72, "h": 56 }, "enabled": true },
+      { "index": 30, "element_token": "s00000042:30", "role": "Edit",   "label": "结果", "value": "0", "enabled": true }
     ]
   },
-  "image": { "attachmentId": "att_9f2c", "mediaType": "image/png", "bytes": 48213, "width": 960, "height": 1240, "name": "get_window_state.png" }
+  "image": { "attachmentId": "sha256:9f2c…", "mediaType": "image/png", "bytes": 48213, "width": 960, "height": 1240, "name": "get_window_state.png" }
 }
 ```
 
 随后点「7」并断言结果框的值——动作先过审批面板，验证给确定性闭环：
 
 ```text
-cua_click { "element_token": "e17" }
-  → 审批面板「点击『示例计算器』的 Button "7"」→ 允许 → {}
+cua_click { "element_token": "s00000042:17" }
+  → 审批面板「dsh-cua 请求执行「鼠标点击」（目标：元素 s00000042:17）」→ 允许 → {}
 
 cua_verify_state { "pid": 4242, "window_id": 197001, "expect": [
-    { "element": { "selector": { "role": "Edit", "label_contains": "结果" }, "value": "7" } }] }
-  → { "results": [ { "state": "satisfied" } ], "summary": "1/1 satisfied" }
+    { "element": { "selector": { "role": "Edit", "label_contains": "结果" }, "value_equals": "7" } }] }
+  → { "predicates": [ { "status": "satisfied" } ], "status": "satisfied" }
 ```
 
 断言读不到目标时返回 `unknown` 并如实说明——`unknown` 永不当作成功。
@@ -93,9 +101,9 @@ vendor\bin\windows-x86_64\cua-driver.exe serve
 ```
 
 ```sh
-dsh plugin --profile web add github:hfloveyy/dsh-cua
+dsh plugin --profile web add github:hfyydd/dsh-cua
 # 或本地开发版：dsh plugin --profile web add link:/path/to/dsh-cua
-# 或发布到 npm 后：dsh plugin --profile web add dsh-cua
+# 或从打包产物安装：dsh plugin --profile web add file:C:/path/to/dsh-cua-0.2.0.tgz
 ```
 
 插件的 bundle patch 会自动挂载，无需手改组合配置。**重启 `dsh web`** 后验证：
@@ -138,12 +146,14 @@ cua-driver 默认发送内容无关遥测，介意可在终端执行一次 `cua-
 npm install
 npm run build          # tsc：src/ → lib/
 node tests/smoke.mjs   # 冒烟：纯函数单测 + 真实 CLI 协议集成（集成层需驱动二进制与 daemon，缺失时自动跳过）
+node tests/compat.mjs vendor/bin/windows-x86_64/cua-driver.exe   # 兼容性：真实 dsh 0.2 API + 真实驱动的 14 工具往返；加 --actions 会驱动一个临时记事本验证输入与断言
 node tests/e2e.mjs     # 完整 web profile 启动，验证 loader 树 / 工具执行 / 图片附件（需 daemon 在线）
 ```
 
 ## 已知限制
 
 - 插件自带二进制的平台：Windows x64；macOS 与 Linux 走全局驱动（上游 `install.sh`）。
+- 自带驱动版本为 `0.37.0`；驱动 daemon 必须来自同一版本线，否则 CLI 会报 contract 版本不匹配（插件会把该错误原样转给模型）。
 - 多显示器暂只覆盖主屏（跟随上游当前版本行为）。
 - 驱动的浏览器 CDP 工具组（browser_navigate / browser_click 等）与应用生命周期组（launch_app / invoke_menu）尚未注册，欢迎 PR——往 `PassToolSpec` 加一条即可。
 
